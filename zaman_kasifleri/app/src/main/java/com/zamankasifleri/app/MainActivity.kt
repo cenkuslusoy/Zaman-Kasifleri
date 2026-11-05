@@ -246,7 +246,7 @@ fun ZamanApp() {
                 if (!imagePath.isNullOrBlank()) {
                     AsyncImage(
                         model = if (imagePath.startsWith("http")) imagePath else File(imagePath),
-                        contentDescription = current.title,
+                        contentDescription = current?.title,
                         modifier = Modifier.fillMaxWidth().height(230.dp)
                     )
                     if (!imagePath.startsWith("http")) {
