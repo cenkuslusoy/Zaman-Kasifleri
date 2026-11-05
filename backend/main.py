@@ -347,10 +347,19 @@ def create_story(req: StoryRequest):
         ]
         for future in as_completed(futures):
             index, image_path = future.result()
-            story.pages[index].image_url = (
-                f"{os.getenv('PUBLIC_BASE_URL', 'https://zaman-kasifleri.onrender.com')}{image_path}"
-                if image_path else None
-            )
+            if image_path:
+                # Cloudinary already returns an absolute HTTPS URL.
+                # Only prefix the Render base URL for local /generated paths.
+                if image_path.startswith(("https://", "http://")):
+                    story.pages[index].image_url = image_path
+                else:
+                    base_url = os.getenv(
+                        "PUBLIC_BASE_URL",
+                        "https://zaman-kasifleri.onrender.com",
+                    ).rstrip("/")
+                    story.pages[index].image_url = f"{base_url}{image_path}"
+            else:
+                story.pages[index].image_url = None
 
     return {
         "title": story.title,
