@@ -2,6 +2,11 @@ name: Build Zaman Kasifleri APK
 
 on:
   workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: 'API server URL for this APK (leave blank for hosted server)'
+        required: false
+        type: string
   push:
     branches: [main]
 
@@ -40,7 +45,14 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build APK
-        run: gradle --no-daemon -p zaman_kasifleri :app:assembleDebug
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url }}
+        run: |
+          if [ -n "$API_BASE_URL" ]; then
+            gradle --no-daemon -p zaman_kasifleri -PapiBaseUrl="$API_BASE_URL" :app:assembleDebug
+          else
+            gradle --no-daemon -p zaman_kasifleri :app:assembleDebug
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
