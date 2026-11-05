@@ -87,7 +87,7 @@ For historical settings, avoid presenting conquest or cruelty as heroic. End war
         ],
         "response_format": {"type": "json_object"},
         "temperature": 0.8,
-        "max_tokens": 4500
+        "max_completion_tokens": 4500
     }
     try:
         r = requests.post(f"{OPENAI_API}/chat/completions", headers=openai_headers(key),
