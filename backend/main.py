@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import List, Optional
 
 import requests
@@ -7,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Zaman Kaşifleri API", version="0.2.1")
+app = FastAPI(title="Zaman Kaşifleri API", version="0.2.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,8 +62,12 @@ Conflict is solved through teamwork, kindness and cleverness. For historical set
 fact from fantasy gently; do not present harmful colonial conquest as heroic. End warmly.
 Images are disabled in this free MVP, so image_prompt is descriptive text only."""
 
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    models = [primary_model]
+    if fallback_model and fallback_model != primary_model:
+        models.append(fallback_model)
+
     payload = {
         "system_instruction": {
             "parts": [{"text": "You create safe, age-appropriate Turkish picture-book stories. Output valid JSON only."}]
@@ -74,22 +79,49 @@ Images are disabled in this free MVP, so image_prompt is descriptive text only."
             "maxOutputTokens": 5000
         }
     }
-    try:
-        response = requests.post(url, params={"key": api_key}, json=payload, timeout=90)
-        if response.status_code >= 400:
-            raise HTTPException(response.status_code, f"Gemini API error: {response.text[:1200]}")
-        result = response.json()
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-        data = json.loads(text)
-        story = Story.model_validate(data)
-        for page in story.pages:
-            page.image_url = None
-        return {
-            "title": story.title,
-            "introduction": story.introduction,
-            "pages": [p.model_dump() for p in story.pages]
-        }
-    except HTTPException:
-        raise
-    except (KeyError, IndexError, ValueError, requests.RequestException) as exc:
-        raise HTTPException(502, f"Story generation failed: {exc}")
+
+    last_error = "Unknown Gemini error"
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        for attempt, delay in enumerate((0, 2), start=1):
+            try:
+                response = requests.post(
+                    url, params={"key": api_key}, json=payload, timeout=90
+                )
+                if response.status_code in (429, 500, 502, 503, 504):
+                    last_error = f"{model}: HTTP {response.status_code} {response.text[:500]}"
+                    if attempt < 2:
+                        time.sleep(delay or 1)
+                        continue
+                    break
+                if response.status_code >= 400:
+                    raise HTTPException(
+                        response.status_code,
+                        f"Gemini API error ({model}): {response.text[:1000]}"
+                    )
+
+                result = response.json()
+                generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
+                data = json.loads(generated_text)
+                story = Story.model_validate(data)
+                for page in story.pages:
+                    page.image_url = None
+                return {
+                    "title": story.title,
+                    "introduction": story.introduction,
+                    "pages": [page.model_dump() for page in story.pages]
+                }
+            except HTTPException:
+                raise
+            except (KeyError, IndexError, ValueError, requests.RequestException) as exc:
+                last_error = f"{model}: {exc}"
+                if attempt < 2:
+                    time.sleep(delay or 1)
+                    continue
+                break
+
+    raise HTTPException(
+        503,
+        "Story generation is temporarily busy. Please try again in a moment. "
+        f"Provider detail: {last_error[:700]}"
+    )
