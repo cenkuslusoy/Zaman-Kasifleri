@@ -18,7 +18,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "API_BASE_URL", "\"https://zaman-kasifleri.onrender.com/\"")
+        val apiBaseUrl = (project.findProperty("apiBaseUrl") as String?) ?: System.getenv("API_BASE_URL") ?: "https://zaman-kasifleri.onrender.com/"
+        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
     buildFeatures { compose = true; buildConfig = true }
 }
