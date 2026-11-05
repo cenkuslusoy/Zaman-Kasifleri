@@ -42,6 +42,7 @@ class Page(BaseModel):
     speaker: str = "Alp"
     image_prompt: str = ""
     image_url: Optional[str] = None
+    image_data: Optional[str] = None
 
 
 class Story(BaseModel):
@@ -264,59 +265,10 @@ def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> t
                 return index, None
 
             image_bytes = base64.b64decode(encoded)
-
-            # On Render Free the local filesystem is ephemeral. If Cloudinary
-            # credentials are configured, store the image there and return its
-            # permanent HTTPS URL. Keep local storage as a development fallback.
-            cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-            cloud_api_key = os.getenv("CLOUDINARY_API_KEY")
-            cloud_api_secret = os.getenv("CLOUDINARY_API_SECRET")
-
-            cloudinary_configured = bool(cloud_name and cloud_api_key and cloud_api_secret)
-            print(
-                f"Image page {index + 1}: storage provider="
-                f"{'cloudinary' if cloudinary_configured else 'local'}"
-            )
-
-            if cloudinary_configured:
-                timestamp = str(int(time.time()))
-                public_id = f"zaman-kasifleri/{story_id}-{index + 1}"
-                signature_params = f"public_id={public_id}&timestamp={timestamp}"
-                signature = hashlib.sha1(
-                    (signature_params + cloud_api_secret).encode("utf-8")
-                ).hexdigest()
-                try:
-                    upload_response = requests.post(
-                        f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
-                        data={
-                            "api_key": cloud_api_key,
-                            "timestamp": timestamp,
-                            "public_id": public_id,
-                            "signature": signature,
-                        },
-                        files={"file": (f"{story_id}-{index + 1}.png", image_bytes, "image/png")},
-                        timeout=(20, 90),
-                    )
-                    if upload_response.status_code >= 400:
-                        print(
-                            f"Cloudinary upload for page {index + 1} failed: "
-                            f"HTTP {upload_response.status_code} {upload_response.text[:500]}"
-                        )
-                        return index, None
-                    secure_url = upload_response.json().get("secure_url")
-                    if secure_url:
-                        print(f"Cloudinary upload for page {index + 1} succeeded.")
-                    if not secure_url:
-                        print(f"Cloudinary upload for page {index + 1} returned no secure_url")
-                        return index, None
-                    return index, secure_url
-                except requests.RequestException as exc:
-                    print(f"Cloudinary upload for page {index + 1} failed: {exc}")
-                    return index, None
-
-            filename = f"{story_id}-{index + 1}.png"
-            (IMAGE_DIR / filename).write_bytes(image_bytes)
-            return index, f"/generated/{filename}"
+            # Return the generated image bytes to Android. The app saves them
+            # in its private on-device story archive, so no hosted image URL
+            # or ephemeral Render filesystem is needed.
+            return index, base64.b64encode(image_bytes).decode("ascii")
 
         except requests.RequestException as exc:
             if attempt < transient_attempts:
@@ -354,20 +306,9 @@ def create_story(req: StoryRequest):
             for i, page in enumerate(story.pages)
         ]
         for future in as_completed(futures):
-            index, image_path = future.result()
-            if image_path:
-                # Cloudinary already returns an absolute HTTPS URL.
-                # Only prefix the Render base URL for local /generated paths.
-                if image_path.startswith(("https://", "http://")):
-                    story.pages[index].image_url = image_path
-                else:
-                    base_url = os.getenv(
-                        "PUBLIC_BASE_URL",
-                        "https://zaman-kasifleri.onrender.com",
-                    ).rstrip("/")
-                    story.pages[index].image_url = f"{base_url}{image_path}"
-            else:
-                story.pages[index].image_url = None
+            index, image_data = future.result()
+            story.pages[index].image_data = image_data
+            story.pages[index].image_url = None
 
     return {
         "title": story.title,
