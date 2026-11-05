@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Zaman Kaşifleri API", version="0.2.2")
+app = FastAPI(title="Zaman Kaşifleri API", version="0.2.3")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,11 +62,14 @@ Conflict is solved through teamwork, kindness and cleverness. For historical set
 fact from fantasy gently; do not present harmful colonial conquest as heroic. End warmly.
 Images are disabled in this free MVP, so image_prompt is descriptive text only."""
 
+    # Use several stable, free-tier text models in sequence to reduce single-model outages.
     primary_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
-    models = [primary_model]
-    if fallback_model and fallback_model != primary_model:
-        models.append(fallback_model)
+    tertiary_model = os.getenv("GEMINI_TERTIARY_MODEL", "gemini-3.1-flash-lite")
+    models = []
+    for model in (primary_model, fallback_model, tertiary_model):
+        if model and model not in models:
+            models.append(model)
 
     payload = {
         "system_instruction": {
