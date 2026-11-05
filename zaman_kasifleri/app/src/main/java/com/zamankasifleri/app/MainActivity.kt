@@ -62,7 +62,8 @@ fun ZamanApp() {
     val scope = rememberCoroutineScope()
     val api = remember {
         val client = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(120, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .readTimeout(300, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
             .build()
