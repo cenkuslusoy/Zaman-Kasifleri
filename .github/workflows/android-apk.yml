@@ -1,4 +1,3 @@
-
 name: Build Zaman Kasifleri APK
 
 on:
@@ -16,8 +15,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source archive
-        run: unzip -q zaman_kasifleri_mvp_kaynak.zip
+      - name: Verify Android source
+        run: test -f zaman_kasifleri/app/src/main/java/com/zamankasifleri/app/MainActivity.kt
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -40,25 +39,6 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Align Java and Kotlin targets
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("zaman_kasifleri/app/build.gradle.kts")
-          s = p.read_text()
-          patch = """android {
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
-          """
-          s = s.replace("android {", patch, 1)
-          p.write_text(s)
-          PY
-
       - name: Build APK
         run: gradle --no-daemon -p zaman_kasifleri :app:assembleDebug
 
@@ -69,4 +49,3 @@ jobs:
           path: zaman_kasifleri/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-          
