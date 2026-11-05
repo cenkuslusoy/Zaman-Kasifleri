@@ -73,6 +73,22 @@ def health():
         "service": "zaman-kasifleri",
         "provider": "openai",
         "images": "gpt-image-2",
+        "image_storage": (
+            "cloudinary"
+            if all(os.getenv(key) for key in (
+                "CLOUDINARY_CLOUD_NAME",
+                "CLOUDINARY_API_KEY",
+                "CLOUDINARY_API_SECRET",
+            ))
+            else "local_fallback"
+        ),
+        "cloudinary_missing_keys": [
+            key for key in (
+                "CLOUDINARY_CLOUD_NAME",
+                "CLOUDINARY_API_KEY",
+                "CLOUDINARY_API_SECRET",
+            ) if not os.getenv(key)
+        ],
     }
 
 
