@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 import base64
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
@@ -247,6 +248,48 @@ def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> t
                 return index, None
 
             image_bytes = base64.b64decode(encoded)
+
+            # On Render Free the local filesystem is ephemeral. If Cloudinary
+            # credentials are configured, store the image there and return its
+            # permanent HTTPS URL. Keep local storage as a development fallback.
+            cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+            cloud_api_key = os.getenv("CLOUDINARY_API_KEY")
+            cloud_api_secret = os.getenv("CLOUDINARY_API_SECRET")
+
+            if cloud_name and cloud_api_key and cloud_api_secret:
+                timestamp = str(int(time.time()))
+                public_id = f"zaman-kasifleri/{story_id}-{index + 1}"
+                signature_params = f"public_id={public_id}&timestamp={timestamp}"
+                signature = hashlib.sha1(
+                    (signature_params + cloud_api_secret).encode("utf-8")
+                ).hexdigest()
+                try:
+                    upload_response = requests.post(
+                        f"https://api.cloudinary.com/v1_1/{cloud_name}/image/upload",
+                        data={
+                            "api_key": cloud_api_key,
+                            "timestamp": timestamp,
+                            "public_id": public_id,
+                            "signature": signature,
+                        },
+                        files={"file": (f"{story_id}-{index + 1}.png", image_bytes, "image/png")},
+                        timeout=(20, 90),
+                    )
+                    if upload_response.status_code >= 400:
+                        print(
+                            f"Cloudinary upload for page {index + 1} failed: "
+                            f"HTTP {upload_response.status_code} {upload_response.text[:500]}"
+                        )
+                        return index, None
+                    secure_url = upload_response.json().get("secure_url")
+                    if not secure_url:
+                        print(f"Cloudinary upload for page {index + 1} returned no secure_url")
+                        return index, None
+                    return index, secure_url
+                except requests.RequestException as exc:
+                    print(f"Cloudinary upload for page {index + 1} failed: {exc}")
+                    return index, None
+
             filename = f"{story_id}-{index + 1}.png"
             (IMAGE_DIR / filename).write_bytes(image_bytes)
             return index, f"/generated/{filename}"
