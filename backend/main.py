@@ -300,3 +300,9 @@ def create_story(req: StoryRequest):
         "introduction": story.introduction,
         "pages": [page.model_dump() for page in story.pages],
     }
+
+
+# Serve the installable web app after all API routes are registered.
+WEB_DIR = APP_DIR / "static"
+if WEB_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
