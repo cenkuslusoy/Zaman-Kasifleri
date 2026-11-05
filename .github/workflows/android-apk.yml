@@ -1,3 +1,4 @@
+
 name: Build Zaman Kasifleri APK
 
 on:
@@ -11,11 +12,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source
+      - name: Extract source archive
         run: unzip -q zaman_kasifleri_mvp_kaynak.zip
 
       - name: Set up Java
@@ -26,8 +28,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
-      - name: Install SDK packages
+      - name: Install Android SDK packages
         run: |
           yes | sdkmanager --licenses
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
