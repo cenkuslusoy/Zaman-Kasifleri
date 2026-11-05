@@ -1,7 +1,8 @@
 import json
 import os
-import re
+import time
 import uuid
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional
@@ -137,43 +138,135 @@ Finish warmly. No audio, narration directions, or sound effects."""
 
 
 def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> tuple[int, Optional[str]]:
-    prompt = (
+    primary_prompt = (
         f"{IMAGE_STYLE}\n\n"
         f"Character continuity: {CHARACTER_BIBLE}\n\n"
         f"Scene: {page.image_prompt}\n"
         "Illustrate one single coherent moment from a premium children's picture book. "
         "Alp is clearly visible and is the central hero. Do not include written words."
     )
-    payload = {
+
+    # If the original scene is rejected by moderation, retry once with a simple,
+    # peaceful alternative that does not repeat the rejected scene description.
+    safe_fallback_prompt = (
+        f"{IMAGE_STYLE}\n\n"
+        f"Character continuity: {CHARACTER_BIBLE}\n\n"
+        "Show Alp in a peaceful, cheerful storybook moment in a bright, welcoming setting. "
+        "He is smiling with curiosity and kindness, surrounded by friendly colors and gentle "
+        "storybook details. Keep the scene wholesome, calm, and suitable for a young child. "
+        "Do not include danger, conflict, written words, or other central characters."
+    )
+
+    base_payload = {
         "model": os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2"),
-        "prompt": prompt,
         "size": os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
         "quality": os.getenv("OPENAI_IMAGE_QUALITY", "medium"),
         "output_format": "png",
         "n": 1,
     }
-    try:
-        response = requests.post(
-            "https://api.openai.com/v1/images/generations",
-            headers=openai_headers(api_key),
-            json=payload,
-            timeout=(20, 150),
-        )
-        if response.status_code >= 400:
-            print(f"Image page {index + 1} failed: HTTP {response.status_code} {response.text[:500]}")
+
+    # Three attempts for temporary network/rate-limit/server errors.
+    # A moderation rejection gets one separate, safer fallback attempt.
+    transient_attempts = 3
+    used_fallback = False
+    attempt = 0
+
+    while attempt < transient_attempts:
+        attempt += 1
+        payload = {
+            **base_payload,
+            "prompt": safe_fallback_prompt if used_fallback else primary_prompt,
+        }
+        try:
+            response = requests.post(
+                "https://api.openai.com/v1/images/generations",
+                headers=openai_headers(api_key),
+                json=payload,
+                timeout=(20, 150),
+            )
+
+            if response.status_code == 400:
+                try:
+                    error = response.json().get("error", {})
+                except ValueError:
+                    error = {}
+                error_code = error.get("code")
+                error_type = error.get("type")
+                if (
+                    not used_fallback
+                    and (
+                        error_code == "moderation_blocked"
+                        or error_type == "image_generation_user_error"
+                    )
+                ):
+                    print(
+                        f"Image page {index + 1} was rejected by moderation; "
+                        "retrying once with a safer alternative prompt."
+                    )
+                    used_fallback = True
+                    attempt = 0
+                    continue
+
+                print(
+                    f"Image page {index + 1} failed: HTTP 400 "
+                    f"{response.text[:500]}"
+                )
+                return index, None
+
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < transient_attempts:
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        delay = min(max(float(retry_after), 1), 8) if retry_after else 2 ** attempt
+                    except ValueError:
+                        delay = 2 ** attempt
+                    print(
+                        f"Image page {index + 1}: temporary HTTP "
+                        f"{response.status_code}; retry {attempt}/{transient_attempts - 1} "
+                        f"in {delay}s."
+                    )
+                    time.sleep(delay)
+                    continue
+
+                print(
+                    f"Image page {index + 1} failed after retries: "
+                    f"HTTP {response.status_code} {response.text[:500]}"
+                )
+                return index, None
+
+            if response.status_code >= 400:
+                print(
+                    f"Image page {index + 1} failed: HTTP {response.status_code} "
+                    f"{response.text[:500]}"
+                )
+                return index, None
+
+            encoded = response.json()["data"][0].get("b64_json")
+            if not encoded:
+                print(f"Image page {index + 1} failed: no b64_json in response")
+                return index, None
+
+            image_bytes = base64.b64decode(encoded)
+            filename = f"{story_id}-{index + 1}.png"
+            (IMAGE_DIR / filename).write_bytes(image_bytes)
+            return index, f"/generated/{filename}"
+
+        except requests.RequestException as exc:
+            if attempt < transient_attempts:
+                delay = 2 ** attempt
+                print(
+                    f"Image page {index + 1}: connection error; "
+                    f"retry {attempt}/{transient_attempts - 1} in {delay}s: {exc}"
+                )
+                time.sleep(delay)
+                continue
+            print(f"Image page {index + 1} failed after retries: {exc}")
             return index, None
-        encoded = response.json()["data"][0].get("b64_json")
-        if not encoded:
-            print(f"Image page {index + 1} failed: no b64_json in response")
+        except (KeyError, IndexError, ValueError) as exc:
+            print(f"Image page {index + 1} failed while reading response: {exc}")
             return index, None
-        import base64
-        image_bytes = base64.b64decode(encoded)
-        filename = f"{story_id}-{index + 1}.png"
-        (IMAGE_DIR / filename).write_bytes(image_bytes)
-        return index, f"/generated/{filename}"
-    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
-        print(f"Image page {index + 1} failed: {exc}")
-        return index, None
+
+    return index, None
 
 
 @app.post("/story")
