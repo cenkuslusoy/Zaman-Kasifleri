@@ -272,7 +272,13 @@ def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> t
             cloud_api_key = os.getenv("CLOUDINARY_API_KEY")
             cloud_api_secret = os.getenv("CLOUDINARY_API_SECRET")
 
-            if cloud_name and cloud_api_key and cloud_api_secret:
+            cloudinary_configured = bool(cloud_name and cloud_api_key and cloud_api_secret)
+            print(
+                f"Image page {index + 1}: storage provider="
+                f"{'cloudinary' if cloudinary_configured else 'local'}"
+            )
+
+            if cloudinary_configured:
                 timestamp = str(int(time.time()))
                 public_id = f"zaman-kasifleri/{story_id}-{index + 1}"
                 signature_params = f"public_id={public_id}&timestamp={timestamp}"
@@ -298,6 +304,8 @@ def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> t
                         )
                         return index, None
                     secure_url = upload_response.json().get("secure_url")
+                    if secure_url:
+                        print(f"Cloudinary upload for page {index + 1} succeeded.")
                     if not secure_url:
                         print(f"Cloudinary upload for page {index + 1} returned no secure_url")
                         return index, None
