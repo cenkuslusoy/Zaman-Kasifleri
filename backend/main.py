@@ -1,31 +1,30 @@
-import base64
 import json
 import os
-import threading
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import List, Optional
 
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Zaman Kaşifleri API", version="1.0.0")
+APP_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = APP_DIR / "generated"
+IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+app = FastAPI(title="Zaman Kaşifleri API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/generated", StaticFiles(directory=str(IMAGE_DIR)), name="generated")
 
-OPENAI_API = "https://api.openai.com/v1"
-TEXT_MODEL = os.getenv("OPENAI_TEXT_MODEL", "gpt-6-luna")
-IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://zaman-kasifleri.onrender.com").rstrip("/")
-IMAGE_CACHE = {}
-IMAGE_LOCK = threading.Lock()
 
 class StoryRequest(BaseModel):
     world: str = Field(min_length=2, max_length=60)
@@ -33,140 +32,176 @@ class StoryRequest(BaseModel):
     minutes: int = Field(default=5, ge=3, le=10)
     age: int = Field(default=5, ge=4, le=6)
 
+
 class Page(BaseModel):
     title: str
     narration: str
     dialogue: str = ""
-    speaker: str = "Anlatıcı"
+    speaker: str = "Alp"
     image_prompt: str = ""
     image_url: Optional[str] = None
+
 
 class Story(BaseModel):
     title: str
     introduction: str
     pages: List[Page]
 
-CHARACTER_BIBLE = """
-Create the same three child heroes in every illustration, in a polished, warm,
-high-quality 3D animated picture-book style. Güney: short dark brown hair,
-blue clothing, energetic expression. Aras: soft curly light-brown hair,
-freckles, red scarf, cheerful expression. Alp: light-brown slightly wavy
-tousled hair, hazel/green-brown eyes, curious gentle expression. Alp is the
-main viewpoint character. They are friendly young children, never teenagers.
-Keep face, hair, age, body proportions and art style consistent. Their outfits
-may adapt naturally to the selected historical/fantasy world. No text, letters,
-watermarks, borders or speech bubbles in the image. Wide cinematic landscape
-composition, clear readable silhouettes, child-safe and inviting.
-"""
 
-def openai_headers(key):
-    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+CHARACTER_BIBLE = (
+    "The only child hero is Alp, a 5-year-old boy with light brown slightly wavy/tousled hair "
+    "and hazel-green eyes. He is curious, kind, brave in a thoughtful way, and playful. "
+    "Show Alp as the same recognizable child on every page; keep face, hair, eye color, age "
+    "and proportions consistent. His clothes may change to fit the era. Do not add other "
+    "named child protagonists."
+)
+
+IMAGE_STYLE = (
+    "High-quality children's picture-book illustration, polished cinematic 3D animated film "
+    "look, warm inviting light, rich but natural colors, expressive friendly faces, clear "
+    "storytelling composition, age-appropriate, no text, no letters, no watermark. "
+    "The same Alp character design must be preserved from page to page."
+)
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "zaman-kasifleri", "provider": "openai"}
+    return {
+        "status": "ok",
+        "service": "zaman-kasifleri",
+        "provider": "openai",
+        "images": "gpt-image-2",
+    }
 
-def generate_story_text(key: str, req: StoryRequest) -> Story:
-    prompt = f"""Write a delightful Turkish illustrated adventure for children aged {req.age}.
-World/era: {req.world}. Mission: {req.mission}. Approximate reading time: {req.minutes} minutes.
-The heroes are best friends Güney, Aras and Alp. Alp is the central viewpoint character.
-Return JSON only with keys title, introduction, pages. Exactly 6 pages.
-Each page: title, narration (2-3 short, vivid child-friendly Turkish sentences),
-dialogue (one short Turkish line), speaker (Güney, Aras or Alp), image_prompt
-(an English visual description of that exact scene; include the three heroes and
-their distinguishing visual traits). Maintain continuity between consecutive scenes.
-No frightening violence, injury, death, gore, weapons used to hurt anyone, or dangerous
-imitation instructions. Resolve challenges through kindness, teamwork and cleverness.
-For historical settings, avoid presenting conquest or cruelty as heroic. End warmly.
-"""
+
+def openai_headers(api_key: str):
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+
+def generate_story_text(req: StoryRequest, api_key: str) -> Story:
+    prompt = f"""Write a delightful Turkish illustrated adventure for one child, Alp, age {req.age}.
+World/era: {req.world}. Mission: {req.mission}. Target reading duration: about {req.minutes} minutes.
+Character guide: {CHARACTER_BIBLE}
+Create exactly 6 pages. Return ONLY a valid JSON object with keys: title, introduction, pages.
+Each page must contain:
+- title: short Turkish page heading
+- narration: 2-3 short, vivid, age-appropriate Turkish sentences
+- dialogue: one short natural Turkish sentence spoken by Alp
+- speaker: exactly "Alp"
+- image_prompt: a detailed ENGLISH visual description of the exact scene, including Alp's action,
+  setting, era-appropriate clothes, mood, and camera framing. Do not repeat generic style words.
+Keep continuity between the six scenes. Give Alp a meaningful, safe, child-friendly problem to solve.
+No frightening violence, injury, death, gore, weapons used to hurt people, or dangerous imitation
+instructions. Resolve conflict through curiosity, kindness and cleverness. Avoid scary villains.
+Finish warmly. No audio, narration directions, or sound effects."""
     payload = {
-        "model": TEXT_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are an expert Turkish picture-book author. Follow child-safety rules. Return valid JSON only."},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.8,
-        "max_completion_tokens": 4500
+        "model": os.getenv("OPENAI_TEXT_MODEL", "gpt-6-luna"),
+        "instructions": "You are an expert Turkish children's picture-book author. Output valid JSON only.",
+        "input": prompt,
+        "text": {"format": {"type": "json_object"}},
+        "max_output_tokens": 5000,
     }
     try:
-        r = requests.post(f"{OPENAI_API}/chat/completions", headers=openai_headers(key),
-                          json=payload, timeout=90)
-        if r.status_code >= 400:
-            raise HTTPException(502, f"OpenAI story error: {r.text[:900]}")
-        raw = r.json()["choices"][0]["message"]["content"]
-        data = json.loads(raw)
+        response = requests.post(
+            "https://api.openai.com/v1/responses",
+            headers=openai_headers(api_key),
+            json=payload,
+            timeout=(20, 120),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"OpenAI text connection failed: {exc}") from exc
+
+    if response.status_code >= 400:
+        detail = response.text[:1200]
+        raise HTTPException(502, f"OpenAI text API error ({response.status_code}): {detail}")
+
+    result = response.json()
+    text = result.get("output_text")
+    if not text:
+        parts = []
+        for item in result.get("output", []):
+            for block in item.get("content", []):
+                if block.get("type") in ("output_text", "text"):
+                    parts.append(block.get("text", ""))
+        text = "\n".join(parts)
+    if not text:
+        raise HTTPException(502, "OpenAI returned an empty story.")
+    try:
+        data = json.loads(text)
         story = Story.model_validate(data)
-        if len(story.pages) != 6:
-            raise ValueError("Model did not return exactly six pages")
-        return story
-    except HTTPException:
-        raise
-    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
-        raise HTTPException(502, f"Story generation failed: {str(exc)[:500]}")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(502, f"OpenAI returned invalid story JSON: {exc}") from exc
+    if len(story.pages) != 6:
+        raise HTTPException(502, f"Expected 6 story pages; received {len(story.pages)}.")
+    return story
 
-def generate_one_image(key: str, page: Page, index: int):
-    prompt = f"""{CHARACTER_BIBLE}
-Scene {index + 1} of a continuous six-page children's story.
-World: {page.image_prompt}
-Illustrate this exact moment: {page.narration}
-Use the same three recognizable child heroes and coherent visual design.
-Do not render any written words.
-"""
+
+def generate_one_image(page: Page, index: int, story_id: str, api_key: str) -> tuple[int, Optional[str]]:
+    prompt = (
+        f"{IMAGE_STYLE}\n\n"
+        f"Character continuity: {CHARACTER_BIBLE}\n\n"
+        f"Scene: {page.image_prompt}\n"
+        "Illustrate one single coherent moment from a premium children's picture book. "
+        "Alp is clearly visible and is the central hero. Do not include written words."
+    )
     payload = {
-        "model": IMAGE_MODEL,
+        "model": os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2"),
         "prompt": prompt,
-        "size": "1024x1024",
-        "quality": os.getenv("OPENAI_IMAGE_QUALITY", "low"),
-        "output_format": "jpeg"
+        "size": os.getenv("OPENAI_IMAGE_SIZE", "1024x1024"),
+        "quality": os.getenv("OPENAI_IMAGE_QUALITY", "medium"),
+        "output_format": "png",
+        "n": 1,
     }
-    r = requests.post(f"{OPENAI_API}/images/generations", headers=openai_headers(key),
-                      json=payload, timeout=180)
-    if r.status_code >= 400:
-        raise RuntimeError(f"Image {index + 1}: HTTP {r.status_code} {r.text[:500]}")
-    encoded = r.json()["data"][0].get("b64_json")
-    if not encoded:
-        raise RuntimeError(f"Image {index + 1}: no image data returned")
-    image_bytes = base64.b64decode(encoded)
-    image_id = uuid.uuid4().hex
-    with IMAGE_LOCK:
-        IMAGE_CACHE[image_id] = image_bytes
-    return index, f"{PUBLIC_BASE_URL}/images/{image_id}"
+    try:
+        response = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers=openai_headers(api_key),
+            json=payload,
+            timeout=(20, 150),
+        )
+        if response.status_code >= 400:
+            print(f"Image page {index + 1} failed: HTTP {response.status_code} {response.text[:500]}")
+            return index, None
+        encoded = response.json()["data"][0].get("b64_json")
+        if not encoded:
+            print(f"Image page {index + 1} failed: no b64_json in response")
+            return index, None
+        import base64
+        image_bytes = base64.b64decode(encoded)
+        filename = f"{story_id}-{index + 1}.png"
+        (IMAGE_DIR / filename).write_bytes(image_bytes)
+        return index, f"/generated/{filename}"
+    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
+        print(f"Image page {index + 1} failed: {exc}")
+        return index, None
 
-@app.get("/images/{image_id}")
-def get_image(image_id: str):
-    with IMAGE_LOCK:
-        content = IMAGE_CACHE.get(image_id)
-    if content is None:
-        raise HTTPException(404, "Image expired; create the story again")
-    return Response(content=content, media_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"})
 
 @app.post("/story")
 def create_story(req: StoryRequest):
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise HTTPException(503, "OPENAI_API_KEY is not configured in Render")
-    story = generate_story_text(key, req)
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(503, "OPENAI_API_KEY is not configured in Render.")
 
-    # Generate three at a time to keep memory and provider concurrency reasonable.
-    errors = []
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        jobs = {pool.submit(generate_one_image, key, page, i): i
-                for i, page in enumerate(story.pages)}
-        for job in as_completed(jobs):
-            try:
-                index, url = job.result()
-                story.pages[index].image_url = url
-            except Exception as exc:
-                errors.append(str(exc))
+    story = generate_story_text(req, api_key)
+    story_id = uuid.uuid4().hex[:12]
 
-    if errors:
-        # Do not return a half-illustrated book: surface a clear provider error.
-        raise HTTPException(502, "Image generation failed: " + " | ".join(errors)[:900])
+    # Generate images concurrently in small batches to keep a six-page story practical
+    # on Render Free. If an image fails, the text story is still returned.
+    max_workers = min(3, len(story.pages))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(generate_one_image, page, i, story_id, api_key)
+            for i, page in enumerate(story.pages)
+        ]
+        for future in as_completed(futures):
+            index, image_path = future.result()
+            story.pages[index].image_url = (
+                f"{os.getenv('PUBLIC_BASE_URL', 'https://zaman-kasifleri.onrender.com')}{image_path}"
+                if image_path else None
+            )
 
     return {
         "title": story.title,
         "introduction": story.introduction,
-        "pages": [page.model_dump() for page in story.pages]
+        "pages": [page.model_dump() for page in story.pages],
     }
